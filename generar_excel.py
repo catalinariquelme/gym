@@ -13,6 +13,7 @@ from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.chart import BarChart, PieChart, LineChart, Reference
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.series import DataPoint
+from openpyxl.formatting.rule import FormulaRule
 from copy import copy
 
 # ── Colores y estilos ─────────────────────────────────────────────
@@ -139,6 +140,39 @@ CLAVES_DIA = {
     "Viernes - Full Body":       "Dia_Viernes",
 }
 
+# Rangos óptimos de repeticiones por ejercicio (min, max)
+REPS_RANGES = {
+    "Flexiones clásicas": (10, 20),
+    "Flexiones diamante": (8, 15),
+    "Flexiones declinadas": (8, 15),
+    "Fondos en silla": (8, 15),
+    "Flexiones abiertas": (10, 20),
+    "Extensión tríceps con mancuerna": (10, 15),
+    "Remo con mancuernas": (10, 15),
+    "Dominadas (o banda elástica)": (5, 12),
+    "Remo invertido (mesa)": (8, 15),
+    "Curl bíceps con mancuerna": (10, 15),
+    "Curl martillo": (10, 15),
+    "Superman": (12, 20),
+    "Sentadillas": (12, 20),
+    "Sentadilla búlgara": (8, 12),
+    "Zancadas": (10, 16),
+    "Peso muerto rumano": (10, 15),
+    "Elevación de talones": (15, 25),
+    "Puente de glúteos": (12, 20),
+    "Press militar con mancuernas": (8, 12),
+    "Elevaciones laterales": (12, 20),
+    "Elevaciones frontales": (12, 20),
+    "Plancha frontal (seg)": (30, 60),
+    "Plancha lateral (seg)": (20, 45),
+    "Crunch abdominal": (15, 25),
+    "Burpees": (8, 15),
+    "Sentadilla con salto": (10, 20),
+    "Flexiones": (10, 20),
+    "Zancadas con salto": (10, 16),
+    "Mountain climbers": (15, 30),
+}
+
 
 def crear_hoja_datos(wb):
     """Hoja oculta con ejercicios en columnas para rangos con nombre."""
@@ -165,6 +199,33 @@ def crear_hoja_datos(wb):
     col_end = get_column_letter(len(RUTINAS))
     defn_lookup = DefinedName("Dias_Lookup", attr_text=f"Datos!$A$1:${col_end}$1")
     wb.defined_names.add(defn_lookup)
+
+    # ── Tabla de ejercicios con rangos de repeticiones (cols H-J) ──
+    # H: Nombre ejercicio, I: Reps Min, J: Reps Max
+    ws.cell(row=1, column=8, value="Ejercicio")
+    ws.cell(row=1, column=9, value="Reps Min")
+    ws.cell(row=1, column=10, value="Reps Max")
+
+    # Deduplicar ejercicios manteniendo orden
+    seen = set()
+    unique_exercises = []
+    for ejercicios in RUTINAS.values():
+        for ej in ejercicios:
+            if ej not in seen:
+                seen.add(ej)
+                unique_exercises.append(ej)
+
+    for i, ej in enumerate(unique_exercises, start=2):
+        rmin, rmax = REPS_RANGES.get(ej, (8, 15))
+        ws.cell(row=i, column=8, value=ej)
+        ws.cell(row=i, column=9, value=rmin)
+        ws.cell(row=i, column=10, value=rmax)
+
+    last_ex_row = 1 + len(unique_exercises)
+    defn_tabla = DefinedName(
+        "TablaEjercicios",
+        attr_text=f"Datos!$H$1:$J${last_ex_row}")
+    wb.defined_names.add(defn_tabla)
 
     return ws
 
@@ -195,7 +256,7 @@ def crear_hoja_registro(wb):
                   "ENTRADA RÁPIDA",
                   font_subtit, fill_header)
 
-    labels = ["Fecha:", "Día/Rutina:", "Ejercicio:", "Series:", "Reps:", "Peso (kg):", "Descanso (seg):", "Notas:"]
+    labels = ["Fecha:", "Día/Rutina:", "Ejercicio:", "Serie #:", "Reps:", "Peso (kg):", "Descanso (seg):", "Notas:"]
     for i, label in enumerate(labels, start=1):
         set_cell(ws, 5, i, label, font_bold, fill_naranja_cl)
 
@@ -248,6 +309,46 @@ def crear_hoja_registro(wb):
     ws.add_data_validation(dv_ejercicio)
     dv_ejercicio.add(ws["C6"])
 
+    # ── Validación numérica para Serie # (D6) ─────────────────────
+    dv_serie = DataValidation(
+        type="list",
+        formula1='"1,2,3,4,5,6,7,8,9,10"',
+        allow_blank=True,
+    )
+    dv_serie.prompt = "N\u00famero de serie (1, 2, 3...)"
+    dv_serie.promptTitle = "Serie #"
+    ws.add_data_validation(dv_serie)
+    dv_serie.add(ws["D6"])
+
+    # ── Indicador de rango de reps en fila 7 ──────────────────────
+    status_formula = (
+        '=IF(OR(C6="",E6=""),"",IF(ISERROR(VLOOKUP(C6,TablaEjercicios,2,FALSE)),'
+        '"",IF(E6>VLOOKUP(C6,TablaEjercicios,3,FALSE),'
+        '"\u2B06 SUPERA RANGO - SUBE PESO",'
+        'IF(E6<VLOOKUP(C6,TablaEjercicios,2,FALSE),'
+        '"\u2B07 BAJO RANGO - BAJA PESO",'
+        '"\u2714 EN RANGO \u00d3PTIMO"))))'
+    )
+    merge_and_set(ws, 7, 4, 7, 7, "", font_small,
+                  PatternFill("solid", fgColor=AZUL_CLARO))
+    cell_status = ws.cell(row=7, column=4)
+    cell_status.value = status_formula
+    cell_status.font = Font(name="Calibri", size=10, bold=True, color="333333")
+    cell_status.alignment = align_center
+
+    # Mostrar rango objetivo del ejercicio seleccionado
+    range_formula = (
+        '=IF(C6="","",IF(ISERROR(VLOOKUP(C6,TablaEjercicios,2,FALSE)),'
+        '"","Rango: "&VLOOKUP(C6,TablaEjercicios,2,FALSE)'
+        '&" - "&VLOOKUP(C6,TablaEjercicios,3,FALSE)&" reps"))'
+    )
+    merge_and_set(ws, 7, 1, 7, 3, "", font_small,
+                  PatternFill("solid", fgColor=AZUL_CLARO))
+    cell_range = ws.cell(row=7, column=1)
+    cell_range.value = range_formula
+    cell_range.font = Font(name="Calibri", size=10, italic=True, color="555555")
+    cell_range.alignment = align_center
+
     # ── Botones de acción (celdas con texto + macro asignada via VBA) ──
     merge_and_set(ws, 8, 2, 8, 3,
                   "▶ REGISTRAR ENTRADA",
@@ -264,7 +365,8 @@ def crear_hoja_registro(wb):
                   "HISTORIAL DE ENTRENAMIENTOS",
                   font_subtit, fill_titulo)
 
-    headers = ["Fecha", "Día / Rutina", "Ejercicio", "Series", "Reps", "Peso (kg)", "Descanso (s)", "Notas"]
+    headers = ["Fecha", "D\u00eda / Rutina", "Ejercicio", "Serie #",
+               "Reps", "Peso (kg)", "Descanso (s)", "Notas"]
     for i, h in enumerate(headers, start=1):
         set_cell(ws, 11, i, h, font_header, fill_header)
 
@@ -275,6 +377,44 @@ def crear_hoja_registro(wb):
             cell = set_cell(ws, r, c, "", font_normal, fill)
             if c == 1:
                 cell.number_format = "DD/MM/YYYY"
+
+    # ── Formato condicional: alertas de rango de reps ─────────────
+    # Rojo: reps superan el máximo → hay que subir peso
+    fill_alert_high = PatternFill(
+        start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")
+    font_alert_high = Font(name="Calibri", size=11, bold=True, color="CC0000")
+    rule_high = FormulaRule(
+        formula=['AND(E12<>"",NOT(ISERROR(VLOOKUP($C12,TablaEjercicios,3,FALSE))),'
+                 'E12>VLOOKUP($C12,TablaEjercicios,3,FALSE))'],
+        fill=fill_alert_high,
+        font=font_alert_high,
+    )
+    ws.conditional_formatting.add("E12:E200", rule_high)
+
+    # Amarillo: reps por debajo del mínimo → considerar bajar peso
+    fill_alert_low = PatternFill(
+        start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+    font_alert_low = Font(name="Calibri", size=11, bold=True, color="856404")
+    rule_low = FormulaRule(
+        formula=['AND(E12<>"",NOT(ISERROR(VLOOKUP($C12,TablaEjercicios,2,FALSE))),'
+                 'E12<VLOOKUP($C12,TablaEjercicios,2,FALSE))'],
+        fill=fill_alert_low,
+        font=font_alert_low,
+    )
+    ws.conditional_formatting.add("E12:E200", rule_low)
+
+    # Verde: reps dentro del rango óptimo
+    fill_ok = PatternFill(
+        start_color="D4EDDA", end_color="D4EDDA", fill_type="solid")
+    font_ok = Font(name="Calibri", size=11, color="155724")
+    rule_ok = FormulaRule(
+        formula=['AND(E12<>"",NOT(ISERROR(VLOOKUP($C12,TablaEjercicios,2,FALSE))),'
+                 'E12>=VLOOKUP($C12,TablaEjercicios,2,FALSE),'
+                 'E12<=VLOOKUP($C12,TablaEjercicios,3,FALSE))'],
+        fill=fill_ok,
+        font=font_ok,
+    )
+    ws.conditional_formatting.add("E12:E200", rule_ok)
 
     # ── Freeze panes ──────────────────────────────────────────────
     ws.freeze_panes = "A12"
@@ -292,35 +432,42 @@ def crear_hoja_rutinas(wb):
 
     ws.column_dimensions["A"].width = 6
     ws.column_dimensions["B"].width = 35
-    ws.column_dimensions["C"].width = 35
-    ws.column_dimensions["D"].width = 14
-    ws.column_dimensions["E"].width = 14
-    ws.column_dimensions["F"].width = 14
+    ws.column_dimensions["C"].width = 22
+    ws.column_dimensions["D"].width = 12
+    ws.column_dimensions["E"].width = 12
+    ws.column_dimensions["F"].width = 12
+    ws.column_dimensions["G"].width = 14
 
-    merge_and_set(ws, 1, 1, 1, 6,
+    merge_and_set(ws, 1, 1, 1, 7,
                   "RUTINAS SEMANALES - ENTRENAMIENTO EN CASA",
                   font_titulo, fill_titulo)
 
-    merge_and_set(ws, 2, 1, 2, 6,
-                  "Personaliza tus rutinas aquí. Los ejercicios aparecerán en la hoja de Registro.",
+    merge_and_set(ws, 2, 1, 2, 7,
+                  "Personaliza tus rutinas aqu\u00ed. Ajusta los rangos de reps "
+                  "para recibir alertas autom\u00e1ticas.",
                   font_small, PatternFill("solid", fgColor=VERDE_CLARO))
 
     row = 4
     for dia, ejercicios in RUTINAS.items():
-        merge_and_set(ws, row, 1, row, 6, dia, font_subtit, fill_header)
+        merge_and_set(ws, row, 1, row, 7, dia, font_subtit, fill_header)
         row += 1
 
-        sub_headers = ["#", "Ejercicio", "Grupo Muscular", "Series Obj.", "Reps Obj.", "Peso Obj. (kg)"]
+        sub_headers = ["#", "Ejercicio", "Grupo Muscular",
+                       "Series Obj.", "Reps Min", "Reps Max", "Peso Obj. (kg)"]
         for i, h in enumerate(sub_headers, start=1):
             set_cell(ws, row, i, h, font_header, fill_verde)
         row += 1
 
         for idx, ej in enumerate(ejercicios, start=1):
             fill = fill_alt1 if idx % 2 == 0 else fill_alt2
+            rmin, rmax = REPS_RANGES.get(ej, (8, 15))
             set_cell(ws, row, 1, idx, font_normal, fill)
             set_cell(ws, row, 2, ej, font_normal, fill, align_left)
-            for c in range(3, 7):
-                set_cell(ws, row, c, "", font_normal, fill)
+            set_cell(ws, row, 3, "", font_normal, fill)       # Grupo muscular
+            set_cell(ws, row, 4, "", font_normal, fill)       # Series obj
+            set_cell(ws, row, 5, rmin, font_normal, fill)     # Reps Min
+            set_cell(ws, row, 6, rmax, font_normal, fill)     # Reps Max
+            set_cell(ws, row, 7, "", font_normal, fill)       # Peso obj
             row += 1
 
         row += 1  # espacio entre días
@@ -379,8 +526,8 @@ def crear_hoja_dashboard(wb):
         ("Prom. Reps",
          '=IFERROR(ROUND(AVERAGE(Registro!E12:E200),1),"-")',
          "0.0", AZUL_OSCURO),
-        ("Volumen Total",
-         '=IFERROR(SUMPRODUCT((Registro!D12:D200)*(Registro!E12:E200)),"-")',
+        ("Total Sets",
+         '=IFERROR(COUNTA(Registro!D12:D200),"-")',
          "#,##0", ROJO),
     ]
 
@@ -405,7 +552,7 @@ def crear_hoja_dashboard(wb):
     merge_and_set(ws, 9, 2, 9, 6,
                   "VOLUMEN POR D\u00cdA DE RUTINA", font_section, fill_header)
 
-    vol_headers = ["D\u00eda", "Sesiones", "Series", "Reps", "Peso Prom."]
+    vol_headers = ["D\u00eda", "Sets", "Total Reps", "Reps Prom.", "Peso Prom."]
     for i, h in enumerate(vol_headers):
         set_cell(ws, 10, 2 + i, h, font_header, fill_verde)
 
@@ -414,14 +561,18 @@ def crear_hoja_dashboard(wb):
         fill = fill_alt1 if i % 2 == 0 else fill_alt2
         short = dia.split(" - ")[0]
         set_cell(ws, r, 2, short, font_bold, fill, align_left)
+        # Sets = count of rows for this day
         set_cell(ws, r, 3,
                  f'=COUNTIF(Registro!B$12:B$200,"{dia}")',
                  font_normal, fill)
+        # Total reps
         set_cell(ws, r, 4,
-                 f'=SUMIF(Registro!B$12:B$200,"{dia}",Registro!D$12:D$200)',
-                 font_normal, fill)
-        set_cell(ws, r, 5,
                  f'=SUMIF(Registro!B$12:B$200,"{dia}",Registro!E$12:E$200)',
+                 font_normal, fill)
+        # Avg reps per set
+        set_cell(ws, r, 5,
+                 f'=IFERROR(AVERAGEIF(Registro!B$12:B$200,"{dia}",'
+                 f'Registro!E$12:E$200),0)',
                  font_normal, fill)
         set_cell(ws, r, 6,
                  f'=IFERROR(AVERAGEIF(Registro!B$12:B$200,"{dia}",'
@@ -468,10 +619,10 @@ def crear_hoja_dashboard(wb):
         ("Ejercicio m\u00e1s frecuente",
          '=IFERROR(INDEX(Registro!C12:C200,MATCH(MAX(COUNTIF(Registro!C12:C200,'
          'Registro!C12:C200)),COUNTIF(Registro!C12:C200,Registro!C12:C200),0)),"-")'),
-        ("Prom. series por sesi\u00f3n",
-         '=IFERROR(ROUND(AVERAGE(Registro!D12:D200),1),"-")'),
-        ("Mayor volumen en 1 registro",
-         '=IFERROR(MAX(Registro!D12:D200*Registro!E12:E200),"-")'),
+        ("Total reps acumuladas",
+         '=IFERROR(SUM(Registro!E12:E200),"-")'),
+        ("Reps max en 1 set",
+         '=IFERROR(MAX(Registro!E12:E200),"-")'),
     ]
 
     for i, (label, formula) in enumerate(insights):
@@ -510,17 +661,53 @@ def crear_hoja_dashboard(wb):
     ws.add_chart(chart_pie, "H22")
 
     # ══════════════════════════════════════════════════════════════
-    # ÚLTIMOS 10 REGISTROS  (rows 26-37)
+    # ALERTAS DE PROGRESO  (rows 26-30)  — left side
     # ══════════════════════════════════════════════════════════════
+    fill_alert_section = PatternFill("solid", fgColor=ROJO)
     merge_and_set(ws, 26, 2, 26, 6,
+                  "\u26a0 ALERTAS DE PROGRESO", font_section, fill_alert_section)
+
+    alertas = [
+        ("Registros SOBRE rango (subir peso)",
+         '=IFERROR(SUMPRODUCT((Registro!E12:E200<>"")'
+         '*NOT(ISERROR(VLOOKUP(Registro!C12:C200,TablaEjercicios,3,FALSE)))'
+         '*(Registro!E12:E200>VLOOKUP(Registro!C12:C200,TablaEjercicios,3,FALSE))),0)'),
+        ("Registros BAJO rango (bajar peso)",
+         '=IFERROR(SUMPRODUCT((Registro!E12:E200<>"")'
+         '*NOT(ISERROR(VLOOKUP(Registro!C12:C200,TablaEjercicios,2,FALSE)))'
+         '*(Registro!E12:E200<VLOOKUP(Registro!C12:C200,TablaEjercicios,2,FALSE))),0)'),
+        ("% en rango \u00f3ptimo",
+         '=IFERROR(TEXT(1-((SUMPRODUCT((Registro!E12:E200<>"")'
+         '*NOT(ISERROR(VLOOKUP(Registro!C12:C200,TablaEjercicios,3,FALSE)))'
+         '*(Registro!E12:E200>VLOOKUP(Registro!C12:C200,TablaEjercicios,3,FALSE)))'
+         '+SUMPRODUCT((Registro!E12:E200<>"")'
+         '*NOT(ISERROR(VLOOKUP(Registro!C12:C200,TablaEjercicios,2,FALSE)))'
+         '*(Registro!E12:E200<VLOOKUP(Registro!C12:C200,TablaEjercicios,2,FALSE))))'
+         '/MAX(COUNTA(Registro!E12:E200),1)),"0%"),"-")'),
+    ]
+
+    for i, (label, formula) in enumerate(alertas):
+        r = 27 + i
+        fill = fill_alt1 if i % 2 == 0 else fill_alt2
+        set_cell(ws, r, 2, label, font_bold, fill, align_left)
+        merge_and_set(ws, r, 3, r, 6, "", font_normal, fill)
+        cell = ws.cell(row=r, column=3)
+        cell.value = formula
+        cell.font = font_bold
+        cell.alignment = align_center
+
+    # ══════════════════════════════════════════════════════════════
+    # ÚLTIMOS 10 REGISTROS  (rows 31-42)
+    # ══════════════════════════════════════════════════════════════
+    merge_and_set(ws, 31, 2, 31, 6,
                   "\u00daLTIMOS 10 REGISTROS", font_section, fill_titulo)
 
     last_headers = ["Fecha", "Rutina", "Ejercicio", "Reps", "Peso (kg)"]
     for i, h in enumerate(last_headers):
-        set_cell(ws, 27, 2 + i, h, font_header, fill_verde)
+        set_cell(ws, 32, 2 + i, h, font_header, fill_verde)
 
     for i in range(10):
-        r = 28 + i
+        r = 33 + i
         fill = fill_alt1 if i % 2 == 0 else fill_alt2
         for c in range(2, 7):
             set_cell(ws, r, c, "", font_normal, fill)
@@ -553,7 +740,7 @@ def crear_hoja_dashboard(wb):
     series_line.graphicalProperties.line.width = 22000
     series_line.smooth = True
 
-    ws.add_chart(chart_line, "H36")
+    ws.add_chart(chart_line, "H41")
 
     # ── Freeze panes ───────────────────────────────────────────────
     ws.freeze_panes = "A4"
@@ -575,20 +762,21 @@ def crear_hoja_instrucciones(wb):
 
     instrucciones = [
         ("HOJA 'REGISTRO'", [
-            "Esta es tu hoja principal. Aquí registras cada ejercicio que hagas.",
-            "1. La FECHA se llena automáticamente con el día de hoy.",
-            "2. Selecciona el DÍA/RUTINA del desplegable (Lunes-Pecho, Martes-Espalda, etc.).",
-            "3. Escribe el nombre del EJERCICIO que realizaste.",
-            "4. Ingresa el número de SERIES, REPETICIONES y PESO usado.",
-            "5. Opcionalmente agrega el tiempo de DESCANSO y NOTAS.",
-            "6. Haz clic en '▶ REGISTRAR ENTRADA' para mover los datos al historial.",
-            "7. Usa '✕ LIMPIAR CAMPOS' para borrar la zona de entrada.",
-            "8. Usa '⟳ DESHACER ÚLTIMO' para eliminar el último registro.",
+            "Cada fila = UN SET de un ejercicio (Serie 1: 15 reps, Serie 2: 12 reps, etc.).",
+            "1. La FECHA se llena autom\u00e1ticamente con el d\u00eda de hoy.",
+            "2. Selecciona el D\u00cdA/RUTINA y luego el EJERCICIO del desplegable din\u00e1mico.",
+            "3. Ingresa el SERIE # (1, 2, 3...), REPS y PESO de ese set.",
+            "4. Al registrar, el Serie # sube autom\u00e1ticamente para el siguiente set.",
+            "5. La fila 7 muestra si tus reps est\u00e1n EN RANGO, SOBRE o BAJO el \u00f3ptimo.",
+            "6. En el historial: VERDE = en rango, ROJO = sube peso, AMARILLO = baja peso.",
+            "7. Haz clic en '\u25b6 REGISTRAR ENTRADA' para guardar el set.",
+            "8. Usa '\u2715 LIMPIAR CAMPOS' o '\u27f3 DESHACER \u00daLTIMO' seg\u00fan necesites.",
         ]),
         ("HOJA 'RUTINAS'", [
-            "Aquí están las rutinas predefinidas para 5 días de la semana.",
-            "Puedes editar los ejercicios, agregar objetivos de series/reps/peso.",
-            "Los nombres de los ejercicios te sirven de guía al llenar el Registro.",
+            "Rutinas predefinidas para 5 d\u00edas con rangos de repeticiones \u00f3ptimas.",
+            "Columnas Reps Min y Reps Max definen el rango ideal por ejercicio.",
+            "Si superas Reps Max consistentemente, es hora de SUBIR PESO.",
+            "Puedes editar los rangos para personalizar tus objetivos.",
         ]),
         ("HOJA 'DASHBOARD'", [
             "Dashboard visual con KPIs, gr\u00e1ficos e insights de tu progreso.",
@@ -599,11 +787,18 @@ def crear_hoja_instrucciones(wb):
             "Secci\u00f3n de insights: d\u00edas sin entrenar, sesiones semanales/mensuales.",
             "Los \u00faltimos 10 registros se muestran al final.",
         ]),
+        ("SISTEMA DE ALERTAS", [
+            "Cada ejercicio tiene un rango \u00f3ptimo de repeticiones (Reps Min - Reps Max).",
+            "VERDE en la columna Reps = est\u00e1s dentro del rango \u00f3ptimo.",
+            "ROJO = superaste el m\u00e1ximo \u2192 SUBE EL PESO en tu pr\u00f3ximo entrenamiento.",
+            "AMARILLO = est\u00e1s por debajo del m\u00ednimo \u2192 considera BAJAR PESO.",
+            "El Dashboard muestra cu\u00e1ntos registros est\u00e1n fuera de rango.",
+        ]),
         ("TIPS", [
-            "Registra CADA serie por separado para un seguimiento más detallado.",
-            "O registra el total de series/reps por ejercicio si prefieres algo rápido.",
-            "Revisa la hoja de Progreso regularmente para ver tu avance.",
-            "¡La constancia es la clave! Intenta entrenar al menos 3-4 días por semana.",
+            "Registra CADA SET por separado: Serie 1 (15 reps), Serie 2 (12 reps), etc.",
+            "El Serie # sube solo al registrar \u2014 perfecto para m\u00faltiples sets seguidos.",
+            "Revisa el Dashboard regularmente para ver alertas y tu progreso.",
+            "\u00a1La constancia es la clave! Intenta entrenar al menos 3-4 d\u00edas por semana.",
         ]),
     ]
 
@@ -660,15 +855,24 @@ Sub RegistrarEntrada()
     ' Formatear la fecha
     wsReg.Cells(nextRow, 1).NumberFormat = "DD/MM/YYYY"
 
-    ' Limpiar campos de entrada (excepto fecha y dia)
-    wsReg.Cells(6, 3).Value = ""  ' Ejercicio
-    wsReg.Cells(6, 4).Value = ""  ' Series
+    ' Auto-incrementar Serie # y limpiar reps/peso (mantener ejercicio y dia)
+    Dim serieActual As Variant
+    serieActual = wsReg.Cells(6, 4).Value
+    If IsNumeric(serieActual) Then
+        wsReg.Cells(6, 4).Value = CLng(serieActual) + 1
+    Else
+        wsReg.Cells(6, 4).Value = 2
+    End If
+
+    ' Limpiar solo reps, peso, descanso y notas
     wsReg.Cells(6, 5).Value = ""  ' Reps
     wsReg.Cells(6, 6).Value = ""  ' Peso
     wsReg.Cells(6, 7).Value = ""  ' Descanso
     wsReg.Cells(6, 8).Value = ""  ' Notas
 
-    MsgBox "Entrada registrada en la fila " & nextRow & ".", _
+    MsgBox "Serie " & wsReg.Cells(nextRow, 4).Value & " de " & _
+           wsReg.Cells(nextRow, 3).Value & " registrada." & vbCrLf & _
+           "Siguiente: Serie " & wsReg.Cells(6, 4).Value, _
            vbInformation, "Registrado"
 End Sub
 

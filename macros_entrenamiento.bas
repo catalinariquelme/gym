@@ -37,15 +37,24 @@ Sub RegistrarEntrada()
     ' Formatear la fecha
     wsReg.Cells(nextRow, 1).NumberFormat = "DD/MM/YYYY"
 
-    ' Limpiar campos de entrada (excepto fecha y dia)
-    wsReg.Cells(6, 3).Value = ""  ' Ejercicio
-    wsReg.Cells(6, 4).Value = ""  ' Series
+    ' Auto-incrementar Serie # y limpiar reps/peso (mantener ejercicio y dia)
+    Dim serieActual As Variant
+    serieActual = wsReg.Cells(6, 4).Value
+    If IsNumeric(serieActual) Then
+        wsReg.Cells(6, 4).Value = CLng(serieActual) + 1
+    Else
+        wsReg.Cells(6, 4).Value = 2
+    End If
+
+    ' Limpiar solo reps, peso, descanso y notas
     wsReg.Cells(6, 5).Value = ""  ' Reps
     wsReg.Cells(6, 6).Value = ""  ' Peso
     wsReg.Cells(6, 7).Value = ""  ' Descanso
     wsReg.Cells(6, 8).Value = ""  ' Notas
 
-    MsgBox "Entrada registrada en la fila " & nextRow & ".", _
+    MsgBox "Serie " & wsReg.Cells(nextRow, 4).Value & " de " & _
+           wsReg.Cells(nextRow, 3).Value & " registrada." & vbCrLf & _
+           "Siguiente: Serie " & wsReg.Cells(6, 4).Value, _
            vbInformation, "Registrado"
 End Sub
 
