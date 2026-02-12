@@ -9,6 +9,10 @@ from openpyxl.styles import (
 )
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.workbook.defined_name import DefinedName
+from openpyxl.chart import BarChart, PieChart, LineChart, Reference
+from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.series import DataPoint
 from copy import copy
 
 # ── Colores y estilos ─────────────────────────────────────────────
@@ -154,13 +158,11 @@ def crear_hoja_datos(wb):
         # Crear rango con nombre para esta columna de ejercicios
         col_letter = get_column_letter(col_idx)
         last_row = 1 + len(ejercicios)
-        from openpyxl.workbook.defined_name import DefinedName
         defn = DefinedName(clave, attr_text=f"Datos!${col_letter}$2:${col_letter}${last_row}")
         wb.defined_names.add(defn)
 
     # Fila 1 también se usa para el lookup: rango "Dias_Lookup"
     col_end = get_column_letter(len(RUTINAS))
-    from openpyxl.workbook.defined_name import DefinedName
     defn_lookup = DefinedName("Dias_Lookup", attr_text=f"Datos!$A$1:${col_end}$1")
     wb.defined_names.add(defn_lookup)
 
@@ -326,87 +328,235 @@ def crear_hoja_rutinas(wb):
     return ws
 
 
-def crear_hoja_progreso(wb):
-    """Hoja de resumen/progreso con fórmulas."""
-    ws = wb.create_sheet("Progreso")
+def crear_hoja_dashboard(wb):
+    """Dashboard visual con KPIs, gráficos e insights de progreso."""
+    ws = wb.create_sheet("Dashboard")
     ws.sheet_properties.tabColor = NARANJA
 
-    ws.column_dimensions["A"].width = 25
-    ws.column_dimensions["B"].width = 18
-    ws.column_dimensions["C"].width = 18
-    ws.column_dimensions["D"].width = 18
-    ws.column_dimensions["E"].width = 18
+    # ── Column widths ──────────────────────────────────────────────
+    ws.column_dimensions["A"].width = 2       # spacer
+    ws.column_dimensions["B"].width = 26      # labels
+    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["D"].width = 14
+    ws.column_dimensions["E"].width = 14
+    ws.column_dimensions["F"].width = 14
+    ws.column_dimensions["G"].width = 2       # spacer
+    for letter in ["H", "I", "J", "K", "L"]:
+        ws.column_dimensions[letter].width = 12
 
-    merge_and_set(ws, 1, 1, 1, 5,
-                  "RESUMEN DE PROGRESO",
+    # Fuentes especiales para KPIs
+    font_kpi_label = Font(name="Calibri", size=9, bold=True, color=BLANCO)
+    font_kpi_value = Font(name="Calibri", size=22, bold=True, color=BLANCO)
+    font_section   = Font(name="Calibri", size=12, bold=True, color=BLANCO)
+
+    # ══════════════════════════════════════════════════════════════
+    # TÍTULO
+    # ══════════════════════════════════════════════════════════════
+    merge_and_set(ws, 1, 1, 1, 12,
+                  "DASHBOARD DE ENTRENAMIENTO",
                   font_titulo, fill_titulo)
-
-    merge_and_set(ws, 2, 1, 2, 5,
-                  "Estadísticas calculadas automáticamente desde tu historial.",
+    merge_and_set(ws, 2, 1, 2, 12,
+                  "Resumen visual de tu progreso. Los datos se actualizan "
+                  "autom\u00e1ticamente desde la hoja Registro.",
                   font_small, PatternFill("solid", fgColor=NARANJA_CL))
 
-    # ── Estadísticas generales ────────────────────────────────────
-    merge_and_set(ws, 4, 1, 4, 5,
-                  "ESTADÍSTICAS GENERALES",
-                  font_subtit, fill_header)
+    # ══════════════════════════════════════════════════════════════
+    # KPI CARDS  (row 4-7)
+    # ══════════════════════════════════════════════════════════════
+    merge_and_set(ws, 4, 1, 4, 12,
+                  "M\u00c9TRICAS CLAVE", font_section, fill_header)
 
-    stats = [
-        ("Total sesiones registradas",  '=COUNTA(Registro!A12:A200)'),
-        ("Último entrenamiento",        '=MAX(Registro!A12:A200)'),
-        ("Peso máximo levantado (kg)",  '=MAX(Registro!F12:F200)'),
-        ("Promedio de repeticiones",    '=IFERROR(AVERAGE(Registro!E12:E200),"")'),
-        ("Ejercicio más frecuente",     '=IFERROR(INDEX(Registro!C12:C200,MATCH(MAX(COUNTIF(Registro!C12:C200,Registro!C12:C200)),COUNTIF(Registro!C12:C200,Registro!C12:C200),0)),"")'),
+    kpis = [
+        ("Total Sesiones",
+         '=COUNTA(Registro!A12:A200)',
+         None, VERDE),
+        ("\u00daltimo Entreno",
+         '=IF(COUNTA(Registro!A12:A200)>0,MAX(Registro!A12:A200),"-")',
+         "DD/MM/YYYY", AZUL_MEDIO),
+        ("Peso M\u00e1x (kg)",
+         '=IF(MAX(Registro!F12:F200)>0,MAX(Registro!F12:F200),"-")',
+         "0.0", NARANJA),
+        ("Prom. Reps",
+         '=IFERROR(ROUND(AVERAGE(Registro!E12:E200),1),"-")',
+         "0.0", AZUL_OSCURO),
+        ("Volumen Total",
+         '=IFERROR(SUMPRODUCT((Registro!D12:D200)*(Registro!E12:E200)),"-")',
+         "#,##0", ROJO),
     ]
 
-    for i, (label, formula) in enumerate(stats):
-        r = 5 + i
-        set_cell(ws, r, 1, label, font_bold, fill_naranja_cl, align_left)
-        merge_and_set(ws, r, 2, r, 3, "", font_normal, fill_input)
-        ws.cell(row=r, column=2).value = formula
-        if i == 1:
-            ws.cell(row=r, column=2).number_format = "DD/MM/YYYY"
+    col_starts = [2, 4, 6, 8, 10]
+    for idx, (label, formula, num_fmt, color) in enumerate(kpis):
+        c = col_starts[idx]
+        fill_kpi = PatternFill("solid", fgColor=color)
+        # Label row
+        merge_and_set(ws, 5, c, 5, c + 1, label, font_kpi_label, fill_kpi)
+        # Value row (2 rows tall)
+        merge_and_set(ws, 6, c, 7, c + 1, "", font_kpi_value, fill_kpi)
+        cell = ws.cell(row=6, column=c)
+        cell.value = formula
+        cell.font = font_kpi_value
+        cell.alignment = align_center
+        if num_fmt:
+            cell.number_format = num_fmt
 
-    # ── Volumen por día de rutina ─────────────────────────────────
-    merge_and_set(ws, 12, 1, 12, 5,
-                  "VOLUMEN POR DÍA DE RUTINA",
-                  font_subtit, fill_header)
+    # ══════════════════════════════════════════════════════════════
+    # VOLUMEN POR DÍA  (rows 9-15)  — left side
+    # ══════════════════════════════════════════════════════════════
+    merge_and_set(ws, 9, 2, 9, 6,
+                  "VOLUMEN POR D\u00cdA DE RUTINA", font_section, fill_header)
 
-    vol_headers = ["Día / Rutina", "Sesiones", "Total Series", "Total Reps", "Peso Prom. (kg)"]
-    for i, h in enumerate(vol_headers, start=1):
-        set_cell(ws, 13, i, h, font_header, fill_verde)
+    vol_headers = ["D\u00eda", "Sesiones", "Series", "Reps", "Peso Prom."]
+    for i, h in enumerate(vol_headers):
+        set_cell(ws, 10, 2 + i, h, font_header, fill_verde)
 
     for i, dia in enumerate(DIAS_SEMANA):
-        r = 14 + i
+        r = 11 + i
         fill = fill_alt1 if i % 2 == 0 else fill_alt2
-        set_cell(ws, r, 1, dia, font_normal, fill, align_left)
-        set_cell(ws, r, 2, f'=COUNTIF(Registro!B12:B200,A{r})', font_normal, fill)
-        set_cell(ws, r, 3, f'=SUMIF(Registro!B12:B200,A{r},Registro!D12:D200)', font_normal, fill)
-        set_cell(ws, r, 4, f'=SUMIF(Registro!B12:B200,A{r},Registro!E12:E200)', font_normal, fill)
-        set_cell(ws, r, 5, f'=IFERROR(AVERAGEIF(Registro!B12:B200,A{r},Registro!F12:F200),"")', font_normal, fill)
+        short = dia.split(" - ")[0]
+        set_cell(ws, r, 2, short, font_bold, fill, align_left)
+        set_cell(ws, r, 3,
+                 f'=COUNTIF(Registro!B$12:B$200,"{dia}")',
+                 font_normal, fill)
+        set_cell(ws, r, 4,
+                 f'=SUMIF(Registro!B$12:B$200,"{dia}",Registro!D$12:D$200)',
+                 font_normal, fill)
+        set_cell(ws, r, 5,
+                 f'=SUMIF(Registro!B$12:B$200,"{dia}",Registro!E$12:E$200)',
+                 font_normal, fill)
+        set_cell(ws, r, 6,
+                 f'=IFERROR(AVERAGEIF(Registro!B$12:B$200,"{dia}",'
+                 f'Registro!F$12:F$200),0)',
+                 font_normal, fill)
 
-    # ── Últimos 10 entrenamientos ─────────────────────────────────
-    merge_and_set(ws, 21, 1, 21, 5,
-                  "ÚLTIMOS 10 REGISTROS",
-                  font_subtit, fill_header)
+    # ── Gráfico de barras: Sesiones por Día ────────────────────────
+    chart_bar = BarChart()
+    chart_bar.type = "col"
+    chart_bar.style = 10
+    chart_bar.title = "Sesiones por D\u00eda"
+    chart_bar.y_axis.title = "Sesiones"
+    chart_bar.x_axis.delete = False
+    chart_bar.legend = None
+
+    data_bar = Reference(ws, min_col=3, min_row=10, max_row=15)
+    cats_bar = Reference(ws, min_col=2, min_row=11, max_row=15)
+    chart_bar.add_data(data_bar, titles_from_data=True)
+    chart_bar.set_categories(cats_bar)
+    chart_bar.width = 20
+    chart_bar.height = 12
+
+    series_bar = chart_bar.series[0]
+    series_bar.graphicalProperties.solidFill = AZUL_MEDIO
+
+    ws.add_chart(chart_bar, "H9")
+
+    # ══════════════════════════════════════════════════════════════
+    # INSIGHTS  (rows 17-24)  — left side
+    # ══════════════════════════════════════════════════════════════
+    merge_and_set(ws, 17, 2, 17, 6,
+                  "INSIGHTS", font_section, fill_titulo)
+
+    insights = [
+        ("D\u00edas sin entrenar",
+         '=IF(COUNTA(Registro!A12:A200)>0,'
+         'TODAY()-MAX(Registro!A12:A200),"-")'),
+        ("Sesiones esta semana",
+         '=COUNTIFS(Registro!A12:A200,">="&(TODAY()-WEEKDAY(TODAY(),2)+1),'
+         'Registro!A12:A200,"<="&TODAY())'),
+        ("Sesiones este mes",
+         '=COUNTIFS(Registro!A12:A200,">="&DATE(YEAR(TODAY()),MONTH(TODAY()),1),'
+         'Registro!A12:A200,"<="&TODAY())'),
+        ("Ejercicio m\u00e1s frecuente",
+         '=IFERROR(INDEX(Registro!C12:C200,MATCH(MAX(COUNTIF(Registro!C12:C200,'
+         'Registro!C12:C200)),COUNTIF(Registro!C12:C200,Registro!C12:C200),0)),"-")'),
+        ("Prom. series por sesi\u00f3n",
+         '=IFERROR(ROUND(AVERAGE(Registro!D12:D200),1),"-")'),
+        ("Mayor volumen en 1 registro",
+         '=IFERROR(MAX(Registro!D12:D200*Registro!E12:E200),"-")'),
+    ]
+
+    for i, (label, formula) in enumerate(insights):
+        r = 18 + i
+        fill = fill_alt1 if i % 2 == 0 else fill_alt2
+        set_cell(ws, r, 2, label, font_bold, fill, align_left)
+        merge_and_set(ws, r, 3, r, 6, "", font_normal, fill)
+        cell = ws.cell(row=r, column=3)
+        cell.value = formula
+        cell.font = font_bold
+        cell.alignment = align_center
+
+    # ── Gráfico circular: Distribución ─────────────────────────────
+    chart_pie = PieChart()
+    chart_pie.title = "Distribuci\u00f3n por Rutina"
+    chart_pie.style = 10
+
+    data_pie = Reference(ws, min_col=3, min_row=10, max_row=15)
+    cats_pie = Reference(ws, min_col=2, min_row=11, max_row=15)
+    chart_pie.add_data(data_pie, titles_from_data=True)
+    chart_pie.set_categories(cats_pie)
+    chart_pie.width = 20
+    chart_pie.height = 12
+
+    chart_pie.dataLabels = DataLabelList()
+    chart_pie.dataLabels.showPercent = True
+    chart_pie.dataLabels.showCatName = True
+    chart_pie.dataLabels.showVal = False
+
+    colors_pie = [AZUL_MEDIO, VERDE, NARANJA, ROJO, AZUL_OSCURO]
+    for i, color in enumerate(colors_pie):
+        pt = DataPoint(idx=i)
+        pt.graphicalProperties.solidFill = color
+        chart_pie.series[0].data_points.append(pt)
+
+    ws.add_chart(chart_pie, "H22")
+
+    # ══════════════════════════════════════════════════════════════
+    # ÚLTIMOS 10 REGISTROS  (rows 26-37)
+    # ══════════════════════════════════════════════════════════════
+    merge_and_set(ws, 26, 2, 26, 6,
+                  "\u00daLTIMOS 10 REGISTROS", font_section, fill_titulo)
 
     last_headers = ["Fecha", "Rutina", "Ejercicio", "Reps", "Peso (kg)"]
-    for i, h in enumerate(last_headers, start=1):
-        set_cell(ws, 22, i, h, font_header, fill_verde)
+    for i, h in enumerate(last_headers):
+        set_cell(ws, 27, 2 + i, h, font_header, fill_verde)
 
     for i in range(10):
-        r = 23 + i
+        r = 28 + i
         fill = fill_alt1 if i % 2 == 0 else fill_alt2
-        data_row = f'=IFERROR(INDEX(Registro!A$12:A$200,MATCH(LARGE(Registro!A$12:A$200,{i+1}),Registro!A$12:A$200,0)),"")'
-        for c in range(1, 6):
+        for c in range(2, 7):
             set_cell(ws, r, c, "", font_normal, fill)
-        # Simplified: just reference the latest rows based on COUNTA
-        src_row_formula = f'=IFERROR(COUNTA(Registro!A$12:A$200)-{i}+11,"")'
-        cols_map = {1: "A", 2: "B", 3: "C", 4: "E", 5: "F"}
+        cols_map = {2: "A", 3: "B", 4: "C", 5: "E", 6: "F"}
         for c, col_letter in cols_map.items():
-            formula = f'=IFERROR(INDEX(Registro!{col_letter}$12:{col_letter}$200,COUNTA(Registro!A$12:A$200)-{i}),"")'
+            formula = (f'=IFERROR(INDEX(Registro!{col_letter}$12:'
+                       f'{col_letter}$200,COUNTA(Registro!A$12:A$200)-{i}),"")')
             ws.cell(row=r, column=c).value = formula
-            if c == 1:
+            if c == 2:
                 ws.cell(row=r, column=c).number_format = "DD/MM/YYYY"
+
+    # ══════════════════════════════════════════════════════════════
+    # GRÁFICO DE LÍNEA: Peso por sesión  (from Registro)
+    # ══════════════════════════════════════════════════════════════
+    ws_reg = wb["Registro"]
+    chart_line = LineChart()
+    chart_line.title = "Peso Levantado por Sesi\u00f3n"
+    chart_line.y_axis.title = "Peso (kg)"
+    chart_line.x_axis.title = "Entrada"
+    chart_line.style = 10
+    chart_line.legend = None
+    chart_line.width = 20
+    chart_line.height = 12
+
+    data_line = Reference(ws_reg, min_col=6, min_row=11, max_row=200)
+    chart_line.add_data(data_line, titles_from_data=True)
+
+    series_line = chart_line.series[0]
+    series_line.graphicalProperties.line.solidFill = VERDE
+    series_line.graphicalProperties.line.width = 22000
+    series_line.smooth = True
+
+    ws.add_chart(chart_line, "H36")
+
+    # ── Freeze panes ───────────────────────────────────────────────
+    ws.freeze_panes = "A4"
 
     return ws
 
@@ -440,10 +590,14 @@ def crear_hoja_instrucciones(wb):
             "Puedes editar los ejercicios, agregar objetivos de series/reps/peso.",
             "Los nombres de los ejercicios te sirven de guía al llenar el Registro.",
         ]),
-        ("HOJA 'PROGRESO'", [
-            "Muestra estadísticas automáticas calculadas desde tu historial.",
-            "Total de sesiones, peso máximo, promedios y volumen por día.",
-            "Los últimos 10 registros se muestran al final.",
+        ("HOJA 'DASHBOARD'", [
+            "Dashboard visual con KPIs, gr\u00e1ficos e insights de tu progreso.",
+            "5 tarjetas de m\u00e9tricas clave: sesiones, \u00faltimo entreno, peso m\u00e1x, etc.",
+            "Gr\u00e1fico de barras: sesiones por d\u00eda de rutina.",
+            "Gr\u00e1fico circular: distribuci\u00f3n porcentual de entrenamientos.",
+            "Gr\u00e1fico de l\u00ednea: progresi\u00f3n del peso levantado por sesi\u00f3n.",
+            "Secci\u00f3n de insights: d\u00edas sin entrenar, sesiones semanales/mensuales.",
+            "Los \u00faltimos 10 registros se muestran al final.",
         ]),
         ("TIPS", [
             "Registra CADA serie por separado para un seguimiento más detallado.",
@@ -641,7 +795,7 @@ def main():
     crear_hoja_datos(wb)        # primero: crea rangos con nombre
     crear_hoja_registro(wb)
     crear_hoja_rutinas(wb)
-    crear_hoja_progreso(wb)
+    crear_hoja_dashboard(wb)
     crear_hoja_instrucciones(wb)
 
     # Mover Instrucciones al principio? No, dejarlo al final.
