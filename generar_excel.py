@@ -126,11 +126,52 @@ RUTINAS = {
 
 DIAS_SEMANA = list(RUTINAS.keys())
 
+# Claves cortas para rangos con nombre (sin espacios ni acentos)
+CLAVES_DIA = {
+    "Lunes - Pecho y Tríceps":   "Dia_Lunes",
+    "Martes - Espalda y Bíceps": "Dia_Martes",
+    "Miércoles - Piernas":       "Dia_Miercoles",
+    "Jueves - Hombros y Core":   "Dia_Jueves",
+    "Viernes - Full Body":       "Dia_Viernes",
+}
+
+
+def crear_hoja_datos(wb):
+    """Hoja oculta con ejercicios en columnas para rangos con nombre."""
+    ws = wb.create_sheet("Datos")
+    ws.sheet_state = "hidden"
+
+    # Fila 1: claves de día (para MATCH/INDEX desde Registro)
+    # Fila 2+: ejercicios de cada día en su columna
+    for col_idx, (dia, ejercicios) in enumerate(RUTINAS.items(), start=1):
+        clave = CLAVES_DIA[dia]
+        # Fila 1: nombre completo del día
+        ws.cell(row=1, column=col_idx, value=dia)
+        # Fila 2 en adelante: ejercicios
+        for row_idx, ej in enumerate(ejercicios, start=2):
+            ws.cell(row=row_idx, column=col_idx, value=ej)
+
+        # Crear rango con nombre para esta columna de ejercicios
+        col_letter = get_column_letter(col_idx)
+        last_row = 1 + len(ejercicios)
+        from openpyxl.workbook.defined_name import DefinedName
+        defn = DefinedName(clave, attr_text=f"Datos!${col_letter}$2:${col_letter}${last_row}")
+        wb.defined_names.add(defn)
+
+    # Fila 1 también se usa para el lookup: rango "Dias_Lookup"
+    col_end = get_column_letter(len(RUTINAS))
+    from openpyxl.workbook.defined_name import DefinedName
+    defn_lookup = DefinedName("Dias_Lookup", attr_text=f"Datos!$A$1:${col_end}$1")
+    wb.defined_names.add(defn_lookup)
+
+    return ws
+
 
 def crear_hoja_registro(wb):
     """Hoja principal donde se registra cada sesión de entrenamiento."""
-    ws = wb.active
-    ws.title = "Registro"
+    ws = wb.create_sheet("Registro")
+    # Move Registro to be the first visible sheet (index 0)
+    wb.move_sheet(ws, offset=-wb.sheetnames.index("Registro"))
     ws.sheet_properties.tabColor = AZUL_MEDIO
 
     # Column widths
@@ -176,6 +217,34 @@ def crear_hoja_registro(wb):
     dv_dia.promptTitle = "Día"
     ws.add_data_validation(dv_dia)
     dv_dia.add(ws["B6"])
+
+    # ── Celda auxiliar oculta (I6) para mapear día → clave de rango ──
+    # Fórmula: convierte "Lunes - Pecho y Tríceps" → "Dia_Lunes"
+    ws.column_dimensions["I"].width = 0.5  # casi invisible
+    ws.column_dimensions["I"].hidden = True
+    lookup_formula = (
+        '=IF(B6="","",IF(LEFT(B6,5)="Lunes","Dia_Lunes",'
+        'IF(LEFT(B6,6)="Martes","Dia_Martes",'
+        'IF(LEFT(B6,4)="Mi' + chr(233) + 'r","Dia_Miercoles",'
+        'IF(LEFT(B6,6)="Jueves","Dia_Jueves",'
+        'IF(LEFT(B6,7)="Viernes","Dia_Viernes",""))))))'
+    )
+    ws.cell(row=6, column=9, value=lookup_formula)
+    ws.cell(row=6, column=9).font = Font(color=BLANCO, size=1)
+
+    # ── Validación desplegable dinámica para Ejercicio (C6) ──────
+    dv_ejercicio = DataValidation(
+        type="list",
+        formula1='=INDIRECT(I6)',
+        allow_blank=True,
+    )
+    dv_ejercicio.error = "Selecciona un ejercicio de la rutina"
+    dv_ejercicio.errorTitle = "Ejercicio inválido"
+    dv_ejercicio.prompt = "Selecciona un ejercicio de la rutina del día"
+    dv_ejercicio.promptTitle = "Ejercicio"
+    dv_ejercicio.showErrorMessage = False  # permitir escribir ejercicios custom
+    ws.add_data_validation(dv_ejercicio)
+    dv_ejercicio.add(ws["C6"])
 
     # ── Botones de acción (celdas con texto + macro asignada via VBA) ──
     merge_and_set(ws, 8, 2, 8, 3,
@@ -564,7 +633,12 @@ End Sub
 def main():
     wb = openpyxl.Workbook()
 
+    # Eliminar la hoja por defecto
+    if "Sheet" in wb.sheetnames:
+        del wb["Sheet"]
+
     # Crear hojas
+    crear_hoja_datos(wb)        # primero: crea rangos con nombre
     crear_hoja_registro(wb)
     crear_hoja_rutinas(wb)
     crear_hoja_progreso(wb)
